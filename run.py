@@ -185,6 +185,10 @@ parser.add_argument(
     help='Quel modèle de diffusion utiliser'
 )
 args = parser.parse_args()
+
+args.output_path = os.path.abspath(args.output_path)
+args.input_path = os.path.abspath(args.input_path)
+
 seed_everything(args.seed)
 
 ###############################################################################
