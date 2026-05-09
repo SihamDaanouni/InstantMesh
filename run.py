@@ -81,18 +81,8 @@ def render_frames(model, planes, render_cameras, render_size=512, chunk_size=1, 
 SYNCDREAMER_AZIMUTHS = np.arange(16) * (360.0 / 16)
 INSTANTMESH_TARGET_AZIMUTHS = np.array([30, 90, 150, 210, 270, 330])
 
-def select_syncdreamer_views(syncdreamer_grid: Image.Image) -> torch.Tensor:
-    grid = np.asarray(syncdreamer_grid, dtype=np.float32) / 255.0
-    H, W, _ = grid.shape
-    h, w = H // 4, W // 4
-
-    views = []
-    for row in range(4):
-        for col in range(4):
-            view = grid[row*h:(row+1)*h, col*w:(col+1)*w]
-            views.append(view)
-    views = np.stack(views, axis=0)
-
+def select_syncdreamer_views(views_array: np.ndarray) -> torch.Tensor:
+    # views_array contient directement nos 16 images séparées
     selected_indices = []
     for target in INSTANTMESH_TARGET_AZIMUTHS:
         diffs = np.abs(SYNCDREAMER_AZIMUTHS - target)
@@ -104,19 +94,18 @@ def select_syncdreamer_views(syncdreamer_grid: Image.Image) -> torch.Tensor:
     print(f"[SyncDreamer] Indices sélectionnés dans les 16 vues : {selected_indices}")
     print(f"[SyncDreamer] Azimuths sélectionnés : {SYNCDREAMER_AZIMUTHS[selected_indices]}")
 
-    selected = views[selected_indices]
-
     selected_resized = []
-    for v in selected:
-        img = Image.fromarray((v * 255).astype(np.uint8)).resize((320, 320), Image.LANCZOS)
+    for idx in selected_indices:
+        # On prend directement la bonne image dans le tableau
+        v = views_array[idx] 
+        img = Image.fromarray(v).resize((320, 320), Image.LANCZOS)
         selected_resized.append(np.asarray(img, dtype=np.float32) / 255.0)
+    
     selected_resized = np.stack(selected_resized, axis=0)
-
     tensor = torch.from_numpy(selected_resized).permute(0, 3, 1, 2).float()
     return tensor
 
 def load_syncdreamer():
-    
     try:
         cfg = f"{syncdreamer_root}/configs/syncdreamer.yaml"
         ckpt = f"{syncdreamer_root}/ckpt/syncdreamer-pretrain.ckpt"
@@ -126,7 +115,6 @@ def load_syncdreamer():
             model = instantiate_from_config(config.model)
             model.load_state_dict(state_dict,strict=True)
             model = model.cuda().eval()
-            #model = load_model(cfg, ckpt)
         return model
     except ImportError as e:
         raise ImportError(
@@ -235,7 +223,7 @@ outputs = []
 
 for idx, image_file in enumerate(input_files):
     name = os.path.basename(image_file).split('.')[0]
-    print(f'[{idx+1}/{len(input_files)}] Imagining {name} ... (mode: {args.diffusion_model})')
+    print(f'\n[{idx+1}/{len(input_files)}] Imagining {name} ... (mode: {args.diffusion_model})')
 
     input_image = Image.open(image_file)
     if not args.no_rembg:
@@ -263,15 +251,19 @@ for idx, image_file in enumerate(input_files):
 
             sampler = SyncDDIMSampler(syncdreamer_model, 50)
 
+            print(f"[SyncDreamer Debug] Début de l'échantillonnage pour {name}...")
+            print(f"[SyncDreamer Debug] VRAM allouée avant sample : {torch.cuda.memory_allocated() / 1e9:.2f} Go")
+            
             x_sample = syncdreamer_model.sample(
                 sampler, 
                 data,
                 cfg_scale=2.0,
-                batch_view_num=1 ,
+                batch_view_num=1,
             )
 
-            x_sample = (torch.clamp(x_sample, max=1.0, min=-1.0) + 1) * 0.5
+            print(f"[SyncDreamer Debug] Échantillonnage terminé pour {name} ✓")
 
+            x_sample = (torch.clamp(x_sample, max=1.0, min=-1.0) + 1) * 0.5
             x_sample = (
                 x_sample.permute(0, 1, 3, 4, 2)
                 .cpu()
@@ -279,24 +271,36 @@ for idx, image_file in enumerate(input_files):
                 * 255
             ).astype(np.uint8)
 
-            # x_sample shape:
-            # [B, 16, H, W, 3]
-
-            views = [
-                Image.fromarray(x_sample[0, i])
-                for i in range(16)
-            ]
-
             # Save horizontal grid
             output_grid = Image.fromarray(
                 np.concatenate([x_sample[0, i] for i in range(16)], axis=1)
             )
-        output_grid.save(os.path.join(image_path, f'{name}_syncdreamer_grid.png'))
-        images = select_syncdreamer_views(output_grid)
-        print(f'[SyncDreamer] 6 vues sélectionnées parmi 16 ✓')
+            output_grid.save(os.path.join(image_path, f'{name}_syncdreamer_grid.png'))
+            
+            # Utilisation de la nouvelle fonction avec x_sample[0]
+            images = select_syncdreamer_views(x_sample[0])
+            print(f'[SyncDreamer] 6 vues sélectionnées parmi 16 ✓')
 
     outputs.append({'name': name, 'images': images})
 
+    # ==========================================
+    # NETTOYAGE MÉMOIRE ÉTAPE 1
+    # ==========================================
+    if args.diffusion_model == 'syncdreamer':
+        try:
+            del data
+            del sampler
+            del x_sample
+            del output_grid
+        except NameError:
+            pass
+    
+    gc.collect()
+    torch.cuda.empty_cache()
+    if args.diffusion_model == 'syncdreamer':
+        print(f"[SyncDreamer Debug] Mémoire nettoyée. VRAM restante : {torch.cuda.memory_allocated() / 1e9:.2f} Go")
+
+# Nettoyage global avant l'étape 2
 if pipeline is not None:
     del pipeline
 if syncdreamer_model is not None:
@@ -313,7 +317,7 @@ sampler = None
 gc.collect()
 torch.cuda.empty_cache()
 
-print('Loading reconstruction model ...')
+print('\nLoading reconstruction model ...')
 model = instantiate_from_config(model_config)
 if os.path.exists(infer_config.model_path):
     model_ckpt_path = infer_config.model_path
@@ -334,7 +338,7 @@ model = model.eval()
 
 for idx, sample in enumerate(outputs):
     name = sample['name']
-    print(f'[{idx+1}/{len(outputs)}] Creating mesh for {name} ...')
+    print(f'\n[{idx+1}/{len(outputs)}] Creating mesh for {name} ...')
 
     images = sample['images'].unsqueeze(0).to(device)
     images = v2.functional.resize(images, 320, interpolation=3, antialias=True).clamp(0, 1)
@@ -376,7 +380,7 @@ for idx, sample in enumerate(outputs):
             render_size = infer_config.render_resolution
             render_cameras = get_render_cameras(
                 batch_size=1, M=120, radius=args.distance,
-                elevation=20.0, is_flexicubes=IS_FLEXICUBES,
+                elevation=30.0, is_flexicubes=IS_FLEXICUBES,
             ).to(device)
             frames = render_frames(
                 model, planes,
@@ -387,3 +391,20 @@ for idx, sample in enumerate(outputs):
             )
             save_video(frames, video_path_idx, fps=30)
             print(f"Video saved to {video_path_idx}")
+
+    # ==========================================
+    # NETTOYAGE MÉMOIRE ÉTAPE 2
+    # ==========================================
+    try:
+        del planes
+        del mesh_out
+        del images
+        if args.save_video:
+            del frames
+            del render_cameras
+    except NameError:
+        pass
+        
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"[Debug] Mémoire nettoyée après création du mesh de {name}.")
