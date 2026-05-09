@@ -1,8 +1,10 @@
 import os
+import sys
 import argparse
 import numpy as np
 import torch
 import rembg
+import gc
 from PIL import Image
 from torchvision.transforms import v2
 from pytorch_lightning import seed_everything
@@ -11,6 +13,7 @@ from einops import rearrange, repeat
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
 from diffusers import DiffusionPipeline, EulerAncestralDiscreteScheduler
+from contextlib import contextmanager
 
 from src.utils.train_util import instantiate_from_config
 from src.utils.camera_util import (
@@ -21,10 +24,25 @@ from src.utils.camera_util import (
 from src.utils.mesh_util import save_obj, save_obj_with_mtl
 from src.utils.infer_util import remove_background, resize_foreground, save_video
 
+syncdreamer_root = "/content/SyncDreamer"
+sys.path.append(syncdreamer_root)
+from ldm.util import prepare_inputs
+from generate import load_model
+from ldm.models.diffusion.sync_dreamer import SyncDDIMSampler
+
 # ============================================================
 #  OPTION A — Zero123++ v1.2 avec vs sans UNet fine-tuné
 #  OPTION B — SyncDreamer avec adaptateur 16→6 vues
 # ============================================================
+
+@contextmanager
+def cd(path):
+    prev = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
 
 def get_render_cameras(batch_size=1, M=120, radius=4.0, elevation=20.0, is_flexicubes=False):
     c2ws = get_circular_camera_poses(M=M, radius=radius, elevation=elevation)
@@ -98,17 +116,24 @@ def select_syncdreamer_views(syncdreamer_grid: Image.Image) -> torch.Tensor:
     return tensor
 
 def load_syncdreamer():
+    
     try:
-        from syncdreamer import SyncDreamer
-        model = SyncDreamer.load_from_checkpoint("ckpt/syncdreamer-pretrain.ckpt")
-        model.eval()
+        cfg = f"{syncdreamer_root}/configs/syncdreamer.yaml"
+        ckpt = f"{syncdreamer_root}/ckpt/syncdreamer-pretrain.ckpt"
+        with cd(syncdreamer_root):
+            config = OmegaConf.load(cfg)
+            state_dict = torch.load(ckpt,map_location='cpu')['state_dict']
+            model = instantiate_from_config(config.model)
+            model.load_state_dict(state_dict,strict=True)
+            model = model.cuda().eval()
+            #model = load_model(cfg, ckpt)
         return model
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
             "SyncDreamer non installé. "
             "Cloner https://github.com/liuyuan-pal/SyncDreamer "
             "et placer le ckpt dans ckpt/syncdreamer-pretrain.ckpt"
-        )
+        ) from e
 
 ###############################################################################
 # Arguments
@@ -183,25 +208,6 @@ elif args.diffusion_model == 'syncdreamer':
     syncdreamer_model = syncdreamer_model.to(device)
     print('[Diffusion] SyncDreamer chargé ✓')
 
-print('Loading reconstruction model ...')
-model = instantiate_from_config(model_config)
-if os.path.exists(infer_config.model_path):
-    model_ckpt_path = infer_config.model_path
-else:
-    model_ckpt_path = hf_hub_download(
-        repo_id="TencentARC/InstantMesh",
-        filename=f"{config_name.replace('-', '_')}.ckpt",
-        repo_type="model"
-    )
-state_dict = torch.load(model_ckpt_path, map_location='cpu')['state_dict']
-state_dict = {k[14:]: v for k, v in state_dict.items() if k.startswith('lrm_generator.')}
-model.load_state_dict(state_dict, strict=True)
-model = model.to(device)
-
-if IS_FLEXICUBES:
-    model.init_flexicubes_geometry(device, fovy=30.0)
-model = model.eval()
-
 output_subfolder = f"{config_name}_{args.diffusion_model}"
 image_path = os.path.join(args.output_path, output_subfolder, 'images')
 mesh_path  = os.path.join(args.output_path, output_subfolder, 'meshes')
@@ -248,12 +254,42 @@ for idx, image_file in enumerate(input_files):
         images = rearrange(images, 'c (n h) (m w) -> (n m) c h w', n=3, m=2)
 
     elif args.diffusion_model == 'syncdreamer':
-        with torch.no_grad():
-            output_grid = syncdreamer_model.generate(
-                input_image,
+        with cd(syncdreamer_root), torch.no_grad():
+            data = prepare_inputs(image_file, elevation_input=30)
+
+            for k, v in data.items():
+                data[k] = v.unsqueeze(0).cuda()
+                data[k] = torch.repeat_interleave(data[k], 1, dim=0)
+
+            sampler = SyncDDIMSampler(syncdreamer_model, 50)
+
+            x_sample = syncdreamer_model.sample(
+                sampler, 
+                data,
                 cfg_scale=2.0,
-                elevation=30,
-                sample_num=1,
+                batch_view_num=1 ,
+            )
+
+            x_sample = (torch.clamp(x_sample, max=1.0, min=-1.0) + 1) * 0.5
+
+            x_sample = (
+                x_sample.permute(0, 1, 3, 4, 2)
+                .cpu()
+                .numpy()
+                * 255
+            ).astype(np.uint8)
+
+            # x_sample shape:
+            # [B, 16, H, W, 3]
+
+            views = [
+                Image.fromarray(x_sample[0, i])
+                for i in range(16)
+            ]
+
+            # Save horizontal grid
+            output_grid = Image.fromarray(
+                np.concatenate([x_sample[0, i] for i in range(16)], axis=1)
             )
         output_grid.save(os.path.join(image_path, f'{name}_syncdreamer_grid.png'))
         images = select_syncdreamer_views(output_grid)
@@ -271,6 +307,30 @@ if syncdreamer_model is not None:
 ###############################################################################
 input_cameras = get_zero123plus_input_cameras(batch_size=1, radius=4.0*args.scale).to(device)
 chunk_size = 20 if IS_FLEXICUBES else 1
+
+syncdreamer_model = None
+sampler = None
+gc.collect()
+torch.cuda.empty_cache()
+
+print('Loading reconstruction model ...')
+model = instantiate_from_config(model_config)
+if os.path.exists(infer_config.model_path):
+    model_ckpt_path = infer_config.model_path
+else:
+    model_ckpt_path = hf_hub_download(
+        repo_id="TencentARC/InstantMesh",
+        filename=f"{config_name.replace('-', '_')}.ckpt",
+        repo_type="model"
+    )
+state_dict = torch.load(model_ckpt_path, map_location='cpu')['state_dict']
+state_dict = {k[14:]: v for k, v in state_dict.items() if k.startswith('lrm_generator.')}
+model.load_state_dict(state_dict, strict=True)
+model = model.to(device)
+
+if IS_FLEXICUBES:
+    model.init_flexicubes_geometry(device, fovy=30.0)
+model = model.eval()
 
 for idx, sample in enumerate(outputs):
     name = sample['name']
