@@ -272,10 +272,11 @@ for idx, image_file in enumerate(input_files):
             ).astype(np.uint8)
 
             # Save horizontal grid
-            output_grid = Image.fromarray(
-                np.concatenate([x_sample[0, i] for i in range(16)], axis=1)
-            )
-            output_grid.save(os.path.join(image_path, f'{name}_syncdreamer_grid.png'))
+            rows = []
+            for r in range(4):
+                row = np.concatenate([x_sample[0, r*4 + c] for c in range(4)], axis=1)
+                rows.append(row)
+            output_grid = Image.fromarray(np.concatenate(rows, axis=0))
             
             # Utilisation de la nouvelle fonction avec x_sample[0]
             images = select_syncdreamer_views(x_sample[0])
@@ -343,7 +344,11 @@ for idx, sample in enumerate(outputs):
     images = sample['images'].unsqueeze(0).to(device)
     images = v2.functional.resize(images, 320, interpolation=3, antialias=True).clamp(0, 1)
 
-    if args.view == 4:
+    if args.diffusion_model == 'syncdreamer':
+        input_cameras_view = get_zero123plus_input_cameras(
+            batch_size=1, radius=4.0 * args.scale
+        ).to(device)
+    elif args.view == 4:
         indices = torch.tensor([0, 2, 4, 5]).long().to(device)
         images = images[:, indices]
         input_cameras_view = input_cameras[:, indices]
