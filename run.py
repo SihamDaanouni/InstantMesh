@@ -81,29 +81,31 @@ def render_frames(model, planes, render_cameras, render_size=512, chunk_size=1, 
 SYNCDREAMER_AZIMUTHS = np.arange(16) * (360.0 / 16)
 INSTANTMESH_TARGET_AZIMUTHS = np.array([30, 90, 150, 210, 270, 330])
 
-def select_syncdreamer_views(views_array: np.ndarray) -> torch.Tensor:
-    # views_array contient directement nos 16 images séparées
+def select_syncdreamer_views(views_array: np.ndarray, rembg_session=None) -> torch.Tensor:
     selected_indices = []
     for target in INSTANTMESH_TARGET_AZIMUTHS:
         diffs = np.abs(SYNCDREAMER_AZIMUTHS - target)
         diffs = np.minimum(diffs, 360 - diffs)
-        best_idx = int(np.argmin(diffs))
-        selected_indices.append(best_idx)
+        selected_indices.append(int(np.argmin(diffs)))
 
-    print(f"[SyncDreamer] Azimuths cibles InstantMesh : {INSTANTMESH_TARGET_AZIMUTHS}")
-    print(f"[SyncDreamer] Indices sélectionnés dans les 16 vues : {selected_indices}")
-    print(f"[SyncDreamer] Azimuths sélectionnés : {SYNCDREAMER_AZIMUTHS[selected_indices]}")
+    print(f"[SyncDreamer] Indices sélectionnés : {selected_indices}")
 
     selected_resized = []
     for idx in selected_indices:
-        # On prend directement la bonne image dans le tableau
-        v = views_array[idx] 
-        img = Image.fromarray(v).resize((320, 320), Image.LANCZOS)
+        img = Image.fromarray(views_array[idx])
+
+        if rembg_session is not None:
+            img = img.convert("RGBA")
+            img = rembg.remove(img, session=rembg_session)
+            background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background.convert("RGB")
+
+        img = img.resize((320, 320), Image.LANCZOS)
         selected_resized.append(np.asarray(img, dtype=np.float32) / 255.0)
-    
+
     selected_resized = np.stack(selected_resized, axis=0)
-    tensor = torch.from_numpy(selected_resized).permute(0, 3, 1, 2).float()
-    return tensor
+    return torch.from_numpy(selected_resized).permute(0, 3, 1, 2).float()
 
 def load_syncdreamer():
     try:
@@ -249,7 +251,7 @@ for idx, image_file in enumerate(input_files):
                 data[k] = v.unsqueeze(0).cuda()
                 data[k] = torch.repeat_interleave(data[k], 1, dim=0)
 
-            sampler = SyncDDIMSampler(syncdreamer_model, 50)
+            sampler = SyncDDIMSampler(syncdreamer_model, 20)
 
             print(f"[SyncDreamer Debug] Début de l'échantillonnage pour {name}...")
             print(f"[SyncDreamer Debug] VRAM allouée avant sample : {torch.cuda.memory_allocated() / 1e9:.2f} Go")
@@ -257,7 +259,7 @@ for idx, image_file in enumerate(input_files):
             x_sample = syncdreamer_model.sample(
                 sampler, 
                 data,
-                cfg_scale=2.0,
+                cfg_scale=1.5,
                 batch_view_num=1,
             )
 
@@ -277,9 +279,10 @@ for idx, image_file in enumerate(input_files):
                 row = np.concatenate([x_sample[0, r*4 + c] for c in range(4)], axis=1)
                 rows.append(row)
             output_grid = Image.fromarray(np.concatenate(rows, axis=0))
-            
+            output_grid.save(os.path.join(image_path, f'{name}_syncdreamer_grid.png'))
+
             # Utilisation de la nouvelle fonction avec x_sample[0]
-            images = select_syncdreamer_views(x_sample[0])
+            images = select_syncdreamer_views(x_sample[0], rembg_session=rembg_session)
             print(f'[SyncDreamer] 6 vues sélectionnées parmi 16 ✓')
 
     outputs.append({'name': name, 'images': images})
