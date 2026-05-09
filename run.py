@@ -199,9 +199,10 @@ elif args.diffusion_model == 'syncdreamer':
     print('[Diffusion] SyncDreamer chargé ✓')
 
 output_subfolder = f"{config_name}_{args.diffusion_model}"
-image_path = os.path.join(args.output_path, output_subfolder, 'images')
-mesh_path  = os.path.join(args.output_path, output_subfolder, 'meshes')
-video_path = os.path.join(args.output_path, output_subfolder, 'videos')
+image_path = os.path.abspath(os.path.join(args.output_path, output_subfolder, 'images'))
+mesh_path  = os.path.abspath(os.path.join(args.output_path, output_subfolder, 'meshes'))
+video_path = os.path.abspath(os.path.join(args.output_path, output_subfolder, 'videos'))
+
 os.makedirs(image_path, exist_ok=True)
 os.makedirs(mesh_path,  exist_ok=True)
 os.makedirs(video_path, exist_ok=True)
