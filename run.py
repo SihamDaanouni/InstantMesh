@@ -349,24 +349,25 @@ for idx, sample in enumerate(outputs):
     images = v2.functional.resize(images, 320, interpolation=3, antialias=True).clamp(0, 1)
 
     if args.diffusion_model == 'syncdreamer':
-            # 1. On génère les 16 caméras circulaires de SyncDreamer (élévation de 30°)
-            all_c2ws = get_circular_camera_poses(M=16, radius=4.0 * args.scale, elevation=30.0)
-    
-            # 2. On garde les indices des 6 vues exactes sélectionnées dans le Stage 1
-            # Tes cibles : [30, 90, 150, 210, 270, 330] -> Indices correspondants : [1, 4, 7, 9, 12, 15]
-            selected_indices = [1, 4, 7, 9, 12, 15]
-            selected_c2ws = all_c2ws[selected_indices]
-    
-            # 3. On formate les caméras comme InstantMesh l'attend
-            if IS_FLEXICUBES:
-                cameras = torch.linalg.inv(selected_c2ws)
-                input_cameras_view = cameras.unsqueeze(0).to(device)
-            else:
-                extrinsics = selected_c2ws.flatten(-2)
-                # FOV de 30 degrés, classique pour InstantMesh
-                intrinsics = FOV_to_intrinsics(30.0).unsqueeze(0).repeat(6, 1, 1).float().flatten(-2)
-                cameras = torch.cat([extrinsics, intrinsics], dim=-1)
-                input_cameras_view = cameras.unsqueeze(0).to(device)
+        # 1. Génération des poses circulaires
+        all_c2ws = get_circular_camera_poses(M=16, radius=4.0 * args.scale, elevation=30.0)
+        
+        # 2. Sélection des 6 indices utilisés au Stage 1
+        selected_indices = [1, 4, 7, 9, 12, 15]
+        selected_c2ws = all_c2ws[selected_indices] # Shape: [6, 4, 4]
+        
+        if IS_FLEXICUBES:
+            # Pour Flexicubes, on inverse souvent la matrice
+            cameras = torch.linalg.inv(selected_c2ws)
+            # On aplatit les matrices 4x4 en vecteurs de 16
+            input_cameras_view = cameras.reshape(1, 6, 16).to(device)
+        else:
+            # Pour le modèle PBR/Triplane classique
+            extrinsics = selected_c2ws.flatten(-2) # Shape: [6, 16]
+            intrinsics = FOV_to_intrinsics(30.0).unsqueeze(0).repeat(6, 1, 1).float().flatten(-2) # Shape: [6, 9]
+            # On combine pour obtenir un vecteur de 25 par vue (16 + 9)
+            cameras = torch.cat([extrinsics, intrinsics], dim=-1) 
+            input_cameras_view = cameras.unsqueeze(0).to(device) # Shape: [1, 6, 25]
     elif args.view == 4:
         indices = torch.tensor([0, 2, 4, 5]).long().to(device)
         images = images[:, indices]
