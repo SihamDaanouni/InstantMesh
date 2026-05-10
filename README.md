@@ -45,6 +45,11 @@ Le framework InstantMesh repose sur une architecture en deux étapes :
 
 ## Références
 
-* Xu et al. (2024) - InstantMesh
-* Shi et al. (2023) - Zero123++
-* Wang et al. (2021) - Real-ESRGAN
+* Xu, J., et al. (2024). InstantMesh: Efficient 3D Mesh Generation from a Single Image with
+* Sparse-view Large Reconstruction Models. arXiv:2404.07191.
+* Deitke, M., et al. (2022). Objaverse: A Universe of Annotated 3D Objects. arXiv:2212.08051.
+* Shi, R., et al. (2023). Zero123++: a single image to consistent multi-view diffusion base
+* model. arXiv:2310.15110. GitHub : https://github.com/SUDO-AI-3D/zero123plus
+* Liu, Y., et al. (2023). SyncDreamer: Generating Multiview-consistent Images from a Single-view Image. arXiv:2309.03453.
+* He, Z. & Wang, T. (2023). OpenLRM: Open-source Large Reconstruction Models. GitHub : https://github.com/3DTopia/OpenLRM
+* Wang, X., et al. (2021). Real-ESRGAN: Training Real-World Blind Super-Resolution with Pure Synthetic Data. arXiv:2107.10833.
