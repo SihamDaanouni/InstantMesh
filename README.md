@@ -25,8 +25,11 @@ Le dépôt est organisé autour de trois composants principaux pour l'exécution
 
 * **run.py** : Script principal permettant de lancer l'inférence des modèles de génération 3D. Tout en optimisant les ressources de l'ordinateur
 * **pipeline-genai.ipynb** : Notebook complet regroupant l'intégralité de la pipeline. Il permet d'inférer sur les différents modèles de diffusion et de réaliser les comparaisons qualitatives et quantitatives. Ce notebook est optimisé pour être exécuté dans un environnement **Kaggle** (nécessite un GPU).
+*  **Multiple diffusion models.ipynb** : Notebook pour une inférence simple et affichage des résulats sur le datset de l'article d'instant mesh. Peut être lancer sur colab.
 * **test_lissage_tiles.ipynb** : Notebook dédié à l'expérimentation sur l'optimisation de la reconstruction. Il implémente le lissage "intelligent" des vues intermédiaires via **Real-ESRGAN** afin d'améliorer la topologie finale du maillage. Ce notebook peut être facilement lancé sur google colab.
 
+
+Tous les problèmes de dépendances ont été gérés sur colab ou kaggle, sur kaggle il faut juste faire tourner le notebook entier et sur colab, il faudra redémarrer la session avant l'éxécution de la première inférence pour les dépendances.
 ## Architecture technique
 
 Le framework InstantMesh repose sur une architecture en deux étapes :
